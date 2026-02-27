@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tradera-cli"
+version = "0.1.1"
+description = "CLI for Tradera web endpoints"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Johnny W" },
+]
+keywords = ["cli", "tradera", "marketplace", "terminal"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Internet",
+  "Topic :: Utilities",
+]
+dependencies = [
+  "requests>=2.32.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Paatsu/tradera-cli"
+Repository = "https://github.com/Paatsu/tradera-cli"
+Issues = "https://github.com/Paatsu/tradera-cli/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2",
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+  "twine>=5.1.1",
+]
+
+[project.scripts]
+tradera = "tradera_cli.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["tradera_cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
