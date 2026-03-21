@@ -14,6 +14,32 @@ from .formatters import (
 )
 
 
+def _extract_buyer_protection(data: dict[str, Any], payment_calculations: dict[str, Any] | None = None) -> tuple[Any, Any]:
+    info = data.get("buyerProtectionInfo")
+    if not isinstance(info, dict):
+        info = data.get("buyer-protection-info")
+    if not isinstance(info, dict):
+        info = {}
+
+    total = info.get("total") or info.get("totalPrice") or info.get("totalAmount") or info.get("priceTotal") or ""
+    fee = info.get("fee") or info.get("buyerProtectionFee") or info.get("serviceFee") or ""
+
+    if isinstance(payment_calculations, dict):
+        if data.get("bidCount") and payment_calculations.get("paymentAmountForBid") is not None:
+            total = payment_calculations.get("paymentAmountForBid")
+            leading_bid = data.get("leadingBid")
+            if isinstance(leading_bid, (int, float)) and isinstance(total, (int, float)):
+                fee = total - leading_bid
+        elif payment_calculations.get("paymentAmountForFixedPrice") is not None:
+            total = payment_calculations.get("paymentAmountForFixedPrice")
+            fixed_price = data.get("fixedPrice")
+            if payment_calculations.get("buyerProtectionCostForFixedPrice") is not None:
+                fee = payment_calculations.get("buyerProtectionCostForFixedPrice")
+            elif isinstance(fixed_price, (int, float)) and isinstance(total, (int, float)):
+                fee = total - fixed_price
+    return total, fee
+
+
 def _print_output(raw: Any, rows: list[dict[str, Any]], fmt: str, columns: list[str]) -> None:
     if fmt == "json":
         print(to_json(raw))
@@ -57,17 +83,54 @@ def cmd_item(args: argparse.Namespace) -> int:
     client = TraderaClient()
     item_id = parse_item_id(args.item)
     data = client.item(item_id)
+    payment_calculations: dict[str, Any] = {}
+    try:
+        payment_calculations = client.item_payment_calculations(item_id)
+    except TraderaApiError:
+        payment_calculations = {}
+
+    buyer_protection_total, buyer_protection_fee = _extract_buyer_protection(data, payment_calculations)
+
     if args.format == "table":
         row = {
             "itemId": data.get("itemId") or data.get("id") or item_id,
             "title": data.get("shortDescription") or data.get("title") or "",
-            "price": data.get("buyNowPrice") or data.get("nextBid") or data.get("price") or "",
+            "price": (
+                data.get("buyNowPrice")
+                or data.get("nextBid")
+                or data.get("price")
+                or data.get("leadingBid")
+                or data.get("fixedPrice")
+                or data.get("openingBid")
+                or ""
+            ),
             "currency": data.get("currency") or "SEK",
+            "buyerProtectionTotal": buyer_protection_total,
+            "buyerProtectionFee": buyer_protection_fee,
             "seller": (data.get("seller") or {}).get("alias") if isinstance(data.get("seller"), dict) else "",
         }
-        print(to_table([row], ["itemId", "title", "price", "currency", "seller"]))
+        print(
+            to_table(
+                [row],
+                ["itemId", "title", "price", "currency", "buyerProtectionTotal", "buyerProtectionFee", "seller"],
+            )
+        )
     else:
-        print(to_json(data))
+        enriched: dict[str, Any] = {}
+        inserted = False
+        for key, value in data.items():
+            enriched[key] = value
+            if key == "leadingBid":
+                enriched["buyerProtectionTotal"] = buyer_protection_total
+                enriched["buyerProtectionFee"] = buyer_protection_fee
+                inserted = True
+        if not inserted:
+            enriched["buyerProtectionTotal"] = buyer_protection_total
+            enriched["buyerProtectionFee"] = buyer_protection_fee
+        if args.format == "jsonl":
+            print(to_jsonl([enriched]))
+        else:
+            print(to_json(enriched))
     return 0
 
 
@@ -104,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     item = subparsers.add_parser("item", help="Get item details")
     item.add_argument("item", help="Item id or item URL")
-    item.add_argument("--format", choices=["table", "json"], default="json")
+    item.add_argument("--format", choices=["table", "json", "jsonl"], default="json")
     item.set_defaults(func=cmd_item)
 
     categories = subparsers.add_parser("categories", help="List categories by level")

@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import requests
 from requests import RequestException
@@ -200,6 +200,33 @@ class TraderaClient:
             raise TraderaApiError(f"Unexpected item response for item {item_id}")
         return data
 
+    def item_payment_calculations(self, item_id: int) -> dict[str, Any]:
+        html = self._request("GET", f"/item/{item_id}")
+        if not isinstance(html, str):
+            raise TraderaApiError(f"Unexpected item page response for item {item_id}")
+
+        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+        if not match:
+            raise TraderaApiError(f"Could not parse item page response for item {item_id}")
+
+        try:
+            data = json.loads(match.group(1))
+        except ValueError as exc:
+            raise TraderaApiError(f"Invalid item page data for item {item_id}") from exc
+
+        payment_calculations = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("initialState", {})
+            .get("views", {})
+            .get("viewItem", {})
+            .get("itemDetails", {})
+            .get("paymentCalculations", {})
+        )
+        if not isinstance(payment_calculations, dict):
+            raise TraderaApiError(f"Unexpected payment calculations for item {item_id}")
+        return payment_calculations
+
     def categories(self, level: int = 1, lang: str = "sv") -> Any:
         return self._request("GET", f"/api/categories/{level}?languageCodeIso2={lang}&next=1")
 
@@ -207,7 +234,19 @@ class TraderaClient:
 def parse_item_id(value: str) -> int:
     if value.isdigit():
         return int(value)
-    match = re.search(r"/(\d{6,})", value)
-    if not match:
+    parsed = urlparse(value)
+    path = parsed.path or value
+    segments = [segment for segment in path.split("/") if segment]
+
+    if "item" in segments:
+        item_index = segments.index("item")
+        numeric_after_item = [segment for segment in segments[item_index + 1 :] if segment.isdigit()]
+        if len(numeric_after_item) >= 2:
+            return int(numeric_after_item[1])
+        if numeric_after_item:
+            return int(numeric_after_item[0])
+
+    matches = re.findall(r"(\d{6,})", value)
+    if not matches:
         raise ValueError(f"Could not parse item id from: {value}")
-    return int(match.group(1))
+    return int(matches[-1])

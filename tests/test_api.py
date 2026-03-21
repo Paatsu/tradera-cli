@@ -420,6 +420,45 @@ def test_item_returns_dict_or_raises() -> None:
         client.item(123)
 
 
+def test_item_payment_calculations_returns_dict() -> None:
+    client = TraderaClient()
+    next_data = {
+        "props": {
+            "pageProps": {
+                "initialState": {
+                    "views": {
+                        "viewItem": {
+                            "itemDetails": {
+                                "paymentCalculations": {
+                                    "paymentAmountForBid": 4927,
+                                    "buyerProtectionCostForFixedPrice": 242,
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    client._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
+        '<script id="__NEXT_DATA__" type="application/json">'
+        f"{json.dumps(next_data)}"
+        "</script>"
+    )
+
+    result = client.item_payment_calculations(123)
+    assert result["paymentAmountForBid"] == 4927
+    assert result["buyerProtectionCostForFixedPrice"] == 242
+
+
+def test_item_payment_calculations_raises_on_missing_next_data() -> None:
+    client = TraderaClient()
+    client._request = lambda *_args, **_kwargs: "<html></html>"  # type: ignore[method-assign]
+
+    with pytest.raises(TraderaApiError, match="Could not parse item page response"):
+        client.item_payment_calculations(123)
+
+
 def test_categories_calls_expected_path() -> None:
     client = TraderaClient()
     captured: dict[str, str] = {}
@@ -440,5 +479,11 @@ def test_categories_calls_expected_path() -> None:
 def test_parse_item_id_from_digits_and_url_and_invalid() -> None:
     assert parse_item_id("123456") == 123456
     assert parse_item_id("https://www.tradera.com/item/123456789/test") == 123456789
+    assert (
+        parse_item_id(
+            "https://www.tradera.com/item/1000006/707858418/playstation-5-disc-edition-the-last-of-us-dualsense"
+        )
+        == 707858418
+    )
     with pytest.raises(ValueError, match="Could not parse item id"):
         parse_item_id("https://www.tradera.com/item/no-id")
