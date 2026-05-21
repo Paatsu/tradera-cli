@@ -97,9 +97,9 @@ def cmd_item(args: argparse.Namespace) -> int:
             "title": data.get("shortDescription") or data.get("title") or "",
             "price": (
                 data.get("buyNowPrice")
-                or data.get("nextBid")
                 or data.get("price")
                 or data.get("leadingBid")
+                or data.get("nextBid")
                 or data.get("fixedPrice")
                 or data.get("openingBid")
                 or ""

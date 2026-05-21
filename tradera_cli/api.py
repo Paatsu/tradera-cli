@@ -68,6 +68,20 @@ class TraderaClient:
                 raise TraderaApiError(f"Invalid JSON response from {path}") from exc
         return response.text
 
+    def _next_data_from_html(self, html: str, context: str) -> dict[str, Any]:
+        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+        if not match:
+            raise TraderaApiError(f"Could not parse {context}")
+
+        try:
+            data = json.loads(match.group(1))
+        except ValueError as exc:
+            raise TraderaApiError(f"Invalid {context}") from exc
+
+        if not isinstance(data, dict):
+            raise TraderaApiError(f"Unexpected {context}")
+        return data
+
     def _ensure_client_token(self, force: bool = False) -> None:
         if not force and self.session.cookies.get("trd_at"):
             return
@@ -101,70 +115,38 @@ class TraderaClient:
         search_type: str | None = None,
     ) -> dict[str, Any]:
         normalized_item_status = item_status or "Active"
-        page_filters: dict[str, str] = {}
+        filters: dict[str, str] = {}
         if search_type:
-            page_filters["searchType"] = search_type
+            filters["searchType"] = search_type
         if normalized_item_status in {"Sold", "Unsold"}:
-            page_filters["itemStatus"] = normalized_item_status
+            filters["itemStatus"] = normalized_item_status
         if condition:
-            page_filters["af-condition"] = condition
+            filters["af-condition"] = condition
         if item_type and item_type != "All":
-            page_filters["itemType"] = item_type
+            filters["itemType"] = item_type
         if from_price is not None:
-            page_filters["fromPrice"] = str(from_price)
+            filters["fromPrice"] = str(from_price)
         if to_price is not None:
-            page_filters["toPrice"] = str(to_price)
+            filters["toPrice"] = str(to_price)
         if allowed_buyer_regions:
-            page_filters["allowedBuyerRegions"] = ALLOWED_BUYER_REGIONS[allowed_buyer_regions]
+            filters["allowedBuyerRegions"] = ALLOWED_BUYER_REGIONS[allowed_buyer_regions]
         if counties:
-            page_filters["counties"] = ";".join(counties)
+            filters["counties"] = ";".join(counties)
 
-        if page_filters:
-            return self._search_page(
-                query=query,
-                page=page,
-                sort_by=sort_by,
-                language_code_iso2=language_code_iso2,
-                filters=page_filters,
-            )
-
-        payload: dict[str, Any] = {
-            "isCsaSearchQuery": False,
-            "query": query,
-            "page": page,
-            "pageSize": page_size,
-            "sortBy": sort_by,
-            "languageCodeIso2": language_code_iso2.lower(),
-            "shippingCountryCodeIso2": shipping_country_code_iso2.upper(),
-            "automaticTranslationPreferred": automatic_translation_preferred,
-            "attributeFilters": [],
-            "categoryPath": [],
-            "currentCategoryId": 0,
-            "filterCounties": None,
-            "filterCategories": {},
-            "filterPrice": {},
-            "filters": {},
-            "headerText": None,
-            "internalSearch": {"showSearchBar": False},
-            "introText": None,
-            "isSavedSearchEmailEnabled": False,
-            "isShopOwnedByCurrentMember": False,
-            "items": [],
-            "relatedItems": [],
-            "itemsOnDisplay": [],
-            "mainText": None,
-            "pagination": None,
-            "totalItems": 0,
-            "searchLanguages": [],
-            "itemsMatchedViewModel": None,
-            "suggestion": None,
-        }
-        return self._request("POST", "/api/webapi/discover/web/independent-search", json=payload)
+        return self._search_page(
+            query=query,
+            page=page,
+            page_size=page_size,
+            sort_by=sort_by,
+            language_code_iso2=language_code_iso2,
+            filters=filters,
+        )
 
     def _search_page(
         self,
         query: str,
         page: int,
+        page_size: int,
         sort_by: str,
         language_code_iso2: str,
         filters: dict[str, str],
@@ -172,6 +154,7 @@ class TraderaClient:
         params = {
             "q": query,
             "paging": page,
+            "pageSize": page_size,
             "sortBy": sort_by,
             "languageCodeIso2": language_code_iso2.lower(),
         }
@@ -180,14 +163,7 @@ class TraderaClient:
         if not isinstance(html, str):
             raise TraderaApiError("Unexpected search page response")
 
-        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-        if not match:
-            raise TraderaApiError("Could not parse search page response")
-
-        try:
-            data = json.loads(match.group(1))
-        except ValueError as exc:
-            raise TraderaApiError("Invalid search page data") from exc
+        data = self._next_data_from_html(html, "search page response")
 
         discover = data.get("props", {}).get("pageProps", {}).get("initialState", {}).get("discover")
         if not isinstance(discover, dict):
@@ -195,34 +171,61 @@ class TraderaClient:
         return discover
 
     def item(self, item_id: int) -> dict[str, Any]:
-        data = self._request("GET", f"/ajax/item/{item_id}")
+        try:
+            return self._item_from_page(item_id)
+        except TraderaApiError:
+            data = self._request("GET", f"/ajax/item/{item_id}")
         if not isinstance(data, dict):
             raise TraderaApiError(f"Unexpected item response for item {item_id}")
         return data
 
-    def item_payment_calculations(self, item_id: int) -> dict[str, Any]:
+    def _item_page_state(self, item_id: int) -> dict[str, Any]:
         html = self._request("GET", f"/item/{item_id}")
         if not isinstance(html, str):
             raise TraderaApiError(f"Unexpected item page response for item {item_id}")
 
-        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
-        if not match:
-            raise TraderaApiError(f"Could not parse item page response for item {item_id}")
+        data = self._next_data_from_html(html, f"item page response for item {item_id}")
 
-        try:
-            data = json.loads(match.group(1))
-        except ValueError as exc:
-            raise TraderaApiError(f"Invalid item page data for item {item_id}") from exc
-
-        payment_calculations = (
+        view_item = (
             data.get("props", {})
             .get("pageProps", {})
             .get("initialState", {})
             .get("views", {})
             .get("viewItem", {})
-            .get("itemDetails", {})
-            .get("paymentCalculations", {})
         )
+        if not isinstance(view_item, dict):
+            raise TraderaApiError(f"Unexpected item page data for item {item_id}")
+        return view_item
+
+    def _item_from_page(self, item_id: int) -> dict[str, Any]:
+        view_item = self._item_page_state(item_id)
+        item_details = view_item.get("itemDetails")
+        if not isinstance(item_details, dict) or not item_details:
+            raise TraderaApiError(f"Unexpected item response for item {item_id}")
+
+        data = dict(item_details)
+        bid_info = view_item.get("bidInfo")
+        if isinstance(bid_info, dict):
+            if bid_info.get("bidCount") is not None:
+                data.setdefault("bidCount", bid_info.get("bidCount"))
+            if bid_info.get("leadingBidAmount") is not None:
+                data.setdefault("leadingBid", bid_info.get("leadingBidAmount"))
+            if bid_info.get("nextValidBidAmount") is not None:
+                data.setdefault("nextBid", bid_info.get("nextValidBidAmount"))
+
+        purchase_info = view_item.get("purchaseInfo")
+        if isinstance(purchase_info, dict) and purchase_info.get("finalPrice") is not None:
+            data.setdefault("price", purchase_info.get("finalPrice"))
+            data.setdefault("finalPrice", purchase_info.get("finalPrice"))
+
+        data.setdefault("currency", "SEK")
+        return data
+
+    def item_payment_calculations(self, item_id: int) -> dict[str, Any]:
+        item_details = self._item_page_state(item_id).get("itemDetails", {})
+        if not isinstance(item_details, dict):
+            raise TraderaApiError(f"Unexpected payment calculations for item {item_id}")
+        payment_calculations = item_details.get("paymentCalculations", {})
         if not isinstance(payment_calculations, dict):
             raise TraderaApiError(f"Unexpected payment calculations for item {item_id}")
         return payment_calculations

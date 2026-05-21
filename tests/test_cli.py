@@ -207,6 +207,32 @@ def test_cmd_item_table_uses_payment_calculations_for_bid_total(
     assert "4690" in out
 
 
+def test_cmd_item_table_prefers_auction_price_over_next_bid(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    class ItemClient(DummyClient):
+        def item(self, _item_id: int) -> dict:
+            return {
+                "itemId": 66,
+                "title": "Ended auction",
+                "leadingBid": 926,
+                "nextBid": 951,
+                "bidCount": 79,
+                "currency": "SEK",
+            }
+
+        def item_payment_calculations(self, _item_id: int) -> dict:
+            return {"paymentAmountForBid": 974}
+
+    monkeypatch.setattr(cli, "TraderaClient", ItemClient)
+
+    args = argparse.Namespace(item="66", format="table")
+    assert cli.cmd_item(args) == 0
+    out = capsys.readouterr().out
+    assert "926" in out
+    assert "951" not in out
+
+
 def test_cmd_categories_jsonl(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     class CategoriesClient(DummyClient):
         def categories(self, **_kwargs: object) -> list:

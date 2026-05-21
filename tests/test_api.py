@@ -190,29 +190,46 @@ def test_ensure_client_token_raises_on_http_error() -> None:
         client._ensure_client_token()
 
 
-def test_search_builds_payload() -> None:
+def test_search_reads_current_search_page_state() -> None:
     client = TraderaClient()
     captured: dict[str, object] = {}
+    next_data = {
+        "props": {
+            "pageProps": {
+                "initialState": {
+                    "discover": {
+                        "items": [{"itemId": 42, "shortDescription": "Apple TV"}],
+                        "queryParams": {"q": "kamera"},
+                    }
+                }
+            }
+        }
+    }
 
-    def fake_request(method: str, path: str, **kwargs: object) -> dict[str, object]:
+    def fake_request(method: str, path: str, **_kwargs: object) -> str:
         captured["method"] = method
         captured["path"] = path
-        captured["json"] = kwargs["json"]
-        return {"items": []}
+        return (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            f"{json.dumps(next_data)}"
+            "</script>"
+        )
 
     client._request = fake_request  # type: ignore[method-assign]
 
     result = client.search("kamera", page=2, page_size=10, sort_by="EndDate")
 
-    assert result == {"items": []}
-    assert captured["method"] == "POST"
-    assert captured["path"] == "/api/webapi/discover/web/independent-search"
-    payload = captured["json"]
-    assert isinstance(payload, dict)
-    assert payload["query"] == "kamera"
-    assert payload["page"] == 2
-    assert payload["pageSize"] == 10
-    assert payload["sortBy"] == "EndDate"
+    assert result["items"][0]["itemId"] == 42
+    assert captured["method"] == "GET"
+    parsed = urlparse(str(captured["path"]))
+    assert parsed.path == "/search"
+    assert parse_qs(parsed.query) == {
+        "q": ["kamera"],
+        "paging": ["2"],
+        "pageSize": ["10"],
+        "sortBy": ["EndDate"],
+        "languageCodeIso2": ["sv"],
+    }
 
 
 def test_search_uses_search_page_for_sold_items() -> None:
@@ -251,6 +268,7 @@ def test_search_uses_search_page_for_sold_items() -> None:
     assert parse_qs(parsed.query) == {
         "q": ["kamera"],
         "paging": ["3"],
+        "pageSize": ["50"],
         "sortBy": ["EndDate"],
         "languageCodeIso2": ["sv"],
         "itemStatus": ["Sold"],
@@ -293,6 +311,7 @@ def test_search_uses_search_page_for_condition_filter() -> None:
     assert parse_qs(parsed.query) == {
         "q": ["kamera"],
         "paging": ["1"],
+        "pageSize": ["50"],
         "sortBy": ["Relevance"],
         "languageCodeIso2": ["sv"],
         "af-condition": ["Oanvänt"],
@@ -350,6 +369,7 @@ def test_search_uses_search_page_for_additional_page_filters() -> None:
     assert parse_qs(parsed.query) == {
         "q": ["kamera"],
         "paging": ["1"],
+        "pageSize": ["50"],
         "sortBy": ["Relevance"],
         "languageCodeIso2": ["sv"],
         "itemType": ["FixedPrice"],
@@ -396,6 +416,7 @@ def test_search_uses_search_page_for_search_type() -> None:
     assert parse_qs(parsed.query) == {
         "q": ["kamera"],
         "paging": ["1"],
+        "pageSize": ["50"],
         "sortBy": ["Relevance"],
         "languageCodeIso2": ["sv"],
         "searchType": ["ExactSearch"],
@@ -412,12 +433,101 @@ def test_search_page_raises_when_next_data_is_missing() -> None:
 
 def test_item_returns_dict_or_raises() -> None:
     client = TraderaClient()
-    client._request = lambda *_args, **_kwargs: {"itemId": 123}  # type: ignore[method-assign]
+    next_data = {
+        "props": {
+            "pageProps": {
+                "initialState": {
+                    "views": {
+                        "viewItem": {
+                            "itemDetails": {"itemId": 123, "title": "Demo"},
+                        }
+                    }
+                }
+            }
+        }
+    }
+    client._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
+        '<script id="__NEXT_DATA__" type="application/json">'
+        f"{json.dumps(next_data)}"
+        "</script>"
+    )
     assert client.item(123)["itemId"] == 123
 
     client._request = lambda *_args, **_kwargs: "not a dict"  # type: ignore[method-assign]
     with pytest.raises(TraderaApiError, match="Unexpected item response"):
         client.item(123)
+
+
+def test_item_reads_current_item_page_state() -> None:
+    client = TraderaClient()
+    calls: list[tuple[str, str]] = []
+    next_data = {
+        "props": {
+            "pageProps": {
+                "initialState": {
+                    "views": {
+                        "viewItem": {
+                            "bidInfo": {
+                                "leadingBidAmount": 926,
+                                "nextValidBidAmount": 951,
+                                "bidCount": 79,
+                            },
+                            "itemDetails": {
+                                "itemId": 731572375,
+                                "title": "Apple TV 32GB",
+                                "itemType": "Auction",
+                                "openingBid": 1,
+                                "leadingBid": 926,
+                                "seller": {"alias": "Lufox"},
+                                "paymentCalculations": {"paymentAmountForBid": 974},
+                            },
+                            "purchaseInfo": {"finalPrice": 926},
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> object:
+        calls.append((method, path))
+        return (
+            '<script id="__NEXT_DATA__" type="application/json">'
+            f"{json.dumps(next_data)}"
+            "</script>"
+        )
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    result = client.item(731572375)
+
+    assert result["itemId"] == 731572375
+    assert result["title"] == "Apple TV 32GB"
+    assert result["leadingBid"] == 926
+    assert result["bidCount"] == 79
+    assert result["nextBid"] == 951
+    assert result["price"] == 926
+    assert result["finalPrice"] == 926
+    assert result["currency"] == "SEK"
+    assert calls == [("GET", "/item/731572375")]
+
+
+def test_item_falls_back_to_ajax_when_page_parse_fails() -> None:
+    client = TraderaClient()
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method: str, path: str, **_kwargs: object) -> object:
+        calls.append((method, path))
+        if path == "/item/123":
+            raise TraderaApiError("Could not parse item page response for item 123")
+        return {"itemId": 123, "title": "Legacy"}
+
+    client._request = fake_request  # type: ignore[method-assign]
+
+    result = client.item(123)
+
+    assert result == {"itemId": 123, "title": "Legacy"}
+    assert calls == [("GET", "/item/123"), ("GET", "/ajax/item/123")]
 
 
 def test_item_payment_calculations_returns_dict() -> None:
