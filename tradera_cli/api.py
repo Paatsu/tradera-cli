@@ -95,14 +95,26 @@ class TraderaClient:
                         offers = item.get("offers")
                         offer_data = offers if isinstance(offers, dict) else (offers[0] if isinstance(offers, list) and offers else {})
 
+                        availability = offer_data.get("availability", "")
+                        status = "Unknown"
+                        if "InStock" in availability:
+                            status = "Ongoing"
+                        elif "OutOfStock" in availability:
+                            status = "Ended"
+
                         return {
                             "itemId": item.get("sku"),
                             "title": item.get("name"),
                             "shortDescription": item.get("name"),
                             "description": item.get("description"),
                             "price": offer_data.get("price"),
+                            "buyNowPrice": offer_data.get("price"),
+                            "fixedPrice": offer_data.get("price"),
+                            "leadingBid": offer_data.get("price"),
+                            "openingBid": offer_data.get("price"),
                             "currency": offer_data.get("priceCurrency", "SEK"),
                             "mainImage": item.get("image"),
+                            "status": status,
                         }
             except (ValueError, TypeError):
                 continue
