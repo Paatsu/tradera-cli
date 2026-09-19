@@ -435,101 +435,55 @@ def test_search_page_raises_when_next_data_is_missing() -> None:
 
 def test_item_returns_dict_or_raises() -> None:
     client = TraderaClient()
-    next_data = {
-        "props": {
-            "pageProps": {
-                "initialState": {
-                    "views": {
-                        "viewItem": {
-                            "itemDetails": {"itemId": 123, "title": "Demo"},
-                        }
-                    }
-                }
-            }
-        }
+    item_id = 123
+    api_response = {
+        "items": [{"itemId": item_id, "title": "Demo", "price": 100}]
     }
-    client._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
-        '<script id="__NEXT_DATA__" type="application/json">'
-        f"{json.dumps(next_data)}"
-        "</script>"
-    )
-    assert client.item(123)["itemId"] == 123
+    client._request = lambda *_args, **_kwargs: api_response  # type: ignore[method-assign]
+    assert client.item(item_id)["itemId"] == item_id
 
     client._request = lambda *_args, **_kwargs: "not a dict"  # type: ignore[method-assign]
     with pytest.raises(TraderaApiError, match="Unexpected item response"):
-        client.item(123)
+        client.item(item_id)
 
 
 def test_item_reads_current_item_page_state() -> None:
     client = TraderaClient()
     calls: list[tuple[str, str]] = []
-    next_data = {
-        "props": {
-            "pageProps": {
-                "initialState": {
-                    "views": {
-                        "viewItem": {
-                            "bidInfo": {
-                                "leadingBidAmount": 926,
-                                "nextValidBidAmount": 951,
-                                "bidCount": 79,
-                            },
-                            "itemDetails": {
-                                "itemId": 731572375,
-                                "title": "Apple TV 32GB",
-                                "itemType": "Auction",
-                                "openingBid": 1,
-                                "leadingBid": 926,
-                                "seller": {"alias": "Lufox"},
-                                "paymentCalculations": {"paymentAmountForBid": 974},
-                            },
-                            "purchaseInfo": {"finalPrice": 926},
-                        }
-                    }
-                }
-            }
-        }
+    item_id = 731572375
+    api_response = {
+        "items": [{
+            "itemId": item_id,
+            "title": "Apple TV 32GB",
+            "itemType": "Auction",
+            "price": 926,
+            "totalBids": 79,
+            "buyNowPrice": 0,
+        }]
     }
 
     def fake_request(method: str, path: str, **_kwargs: object) -> object:
         calls.append((method, path))
-        return (
-            '<script id="__NEXT_DATA__" type="application/json">'
-            f"{json.dumps(next_data)}"
-            "</script>"
-        )
+        return api_response
 
     client._request = fake_request  # type: ignore[method-assign]
 
-    result = client.item(731572375)
+    result = client.item(item_id)
 
-    assert result["itemId"] == 731572375
+    assert result["itemId"] == item_id
     assert result["title"] == "Apple TV 32GB"
     assert result["leadingBid"] == 926
-    assert result["bidCount"] == 79
-    assert result["nextBid"] == 951
+    assert result["totalBids"] == 79
     assert result["price"] == 926
-    assert result["finalPrice"] == 926
     assert result["currency"] == "SEK"
-    assert calls == [("GET", "/item/731572375")]
+    assert calls[0][0] == "GET"
+    assert "items-by-ids" in calls[0][1]
 
 
 def test_item_falls_back_to_ajax_when_page_parse_fails() -> None:
-    client = TraderaClient()
-    calls: list[tuple[str, str]] = []
-
-    def fake_request(method: str, path: str, **_kwargs: object) -> object:
-        calls.append((method, path))
-        if path == "/item/123":
-            raise TraderaApiError("Could not parse item page response for item 123")
-        return {"itemId": 123, "title": "Legacy"}
-
-    client._request = fake_request  # type: ignore[method-assign]
-
-    result = client.item(123)
-
-    assert result == {"itemId": 123, "title": "Legacy"}
-    assert calls == [("GET", "/item/123"), ("GET", "/ajax/item/123")]
+    # This test is now obsolete because we use the Web API directly
+    # and no longer fall back to /ajax/item/{id}
+    pass
 
 
 def test_item_payment_calculations_returns_dict() -> None:

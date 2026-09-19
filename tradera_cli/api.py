@@ -247,6 +247,7 @@ class TraderaClient:
         if item_data.get("itemType") == "Auction":
             item_data["leadingBid"] = item_data.get("price")
 
+        item_data.setdefault("currency", "SEK")
         return item_data
 
     def _item_page_state(self, item_id: int) -> dict[str, Any]:
