@@ -69,7 +69,7 @@ class TraderaClient:
         return response.text
 
     def _next_data_from_html(self, html: str, context: str) -> dict[str, Any]:
-        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html)
+        match = re.search(r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.DOTALL)
         if not match:
             raise TraderaApiError(f"Could not parse {context}")
 
@@ -81,6 +81,32 @@ class TraderaClient:
         if not isinstance(data, dict):
             raise TraderaApiError(f"Unexpected {context}")
         return data
+
+    def _extract_json_ld_product(self, html: str) -> dict[str, Any] | None:
+        # Find all JSON-LD script blocks
+        scripts = re.findall(r'<script type="application/ld\+json">(.*?)</script>', html, re.DOTALL)
+        for script_content in scripts:
+            try:
+                data = json.loads(script_content)
+                # JSON-LD can be a list of objects or a single object
+                items = data if isinstance(data, list) else [data]
+                for item in items:
+                    if isinstance(item, dict) and item.get("@type") == "Product":
+                        offers = item.get("offers")
+                        offer_data = offers if isinstance(offers, dict) else (offers[0] if isinstance(offers, list) and offers else {})
+
+                        return {
+                            "itemId": item.get("sku"),
+                            "title": item.get("name"),
+                            "shortDescription": item.get("name"),
+                            "description": item.get("description"),
+                            "price": offer_data.get("price"),
+                            "currency": offer_data.get("priceCurrency", "SEK"),
+                            "mainImage": item.get("image"),
+                        }
+            except (ValueError, TypeError):
+                continue
+        return None
 
     def _ensure_client_token(self, force: bool = False) -> None:
         if not force and self.session.cookies.get("trd_at"):
@@ -163,7 +189,29 @@ class TraderaClient:
         if not isinstance(html, str):
             raise TraderaApiError("Unexpected search page response")
 
-        data = self._next_data_from_html(html, "search page response")
+        try:
+            data = self._next_data_from_html(html, "search page response")
+        except TraderaApiError:
+            # Fallback to scraping the HTML for search results
+            items = []
+            # Find all item links: /item/{catId}/{itemId}/{slug}
+            links = re.findall(r'href="/item/([0-9]+)/([0-9]+)/([^"]*)"', html)
+
+            # To avoid duplicates
+            seen_ids = set()
+            for cat_id, item_id, slug in links:
+                if item_id not in seen_ids:
+                    items.append({
+                        "itemId": item_id,
+                        "title": slug.replace("-", " ").replace("_", " ").capitalize(),
+                        "url": f"/item/{cat_id}/{item_id}/{slug}",
+                        "price": "Unknown",
+                        "currency": "SEK",
+                        "endDate": None,
+                    })
+                    seen_ids.add(item_id)
+
+            return {"items": items}
 
         discover = data.get("props", {}).get("pageProps", {}).get("initialState", {}).get("discover")
         if not isinstance(discover, dict):
@@ -184,7 +232,28 @@ class TraderaClient:
         if not isinstance(html, str):
             raise TraderaApiError(f"Unexpected item page response for item {item_id}")
 
-        data = self._next_data_from_html(html, f"item page response for item {item_id}")
+        try:
+            data = self._next_data_from_html(html, f"item page response for item {item_id}")
+        except TraderaApiError:
+            # Fallback to JSON-LD extraction
+            json_ld_data = self._extract_json_ld_product(html)
+            if json_ld_data:
+                # Wrap in the structure expected by _item_from_page
+                data = {
+                    "props": {
+                        "pageProps": {
+                            "initialState": {
+                                "views": {
+                                    "viewItem": {
+                                        "itemDetails": json_ld_data
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            else:
+                raise
 
         view_item = (
             data.get("props", {})
