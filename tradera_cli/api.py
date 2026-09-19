@@ -234,13 +234,20 @@ class TraderaClient:
         return discover
 
     def item(self, item_id: int) -> dict[str, Any]:
-        try:
-            return self._item_from_page(item_id)
-        except TraderaApiError:
-            data = self._request("GET", f"/ajax/item/{item_id}")
-        if not isinstance(data, dict):
+        params = {
+            "searchLanguageCodeIso2": "sv",
+            "automaticTranslationPreferred": "true",
+            "itemIds": str(item_id),
+        }
+        data = self._request("GET", f"/api/webapi/discover/web/items/items-by-ids?{urlencode(params)}")
+        if not isinstance(data, dict) or not data.get("items"):
             raise TraderaApiError(f"Unexpected item response for item {item_id}")
-        return data
+
+        item_data = data["items"][0]
+        if item_data.get("itemType") == "Auction":
+            item_data["leadingBid"] = item_data.get("price")
+
+        return item_data
 
     def _item_page_state(self, item_id: int) -> dict[str, Any]:
         html = self._request("GET", f"/item/{item_id}")
