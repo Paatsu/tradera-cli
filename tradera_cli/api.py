@@ -197,6 +197,9 @@ class TraderaClient:
             # Find all item links: /item/{catId}/{itemId}/{slug}
             links = re.findall(r'href="/item/([0-9]+)/([0-9]+)/([^"]*)"', html)
 
+            if not links:
+                raise TraderaApiError("Could not parse search page response")
+
             # To avoid duplicates
             seen_ids = set()
             for cat_id, item_id, slug in links:

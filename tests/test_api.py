@@ -425,10 +425,12 @@ def test_search_uses_search_page_for_search_type() -> None:
 
 def test_search_page_raises_when_next_data_is_missing() -> None:
     client = TraderaClient()
-    client._request = lambda *_args, **_kwargs: "<html></html>"  # type: ignore[method-assign]
+    # Use a response that has neither __NEXT_DATA__ nor any item links
+    client._request = lambda *_args, **_kwargs: "<html><body>No data here</body></html>"  # type: ignore[method-assign]
 
     with pytest.raises(TraderaApiError, match="Could not parse search page response"):
         client.search("kamera", item_status="Unsold")
+
 
 
 def test_item_returns_dict_or_raises() -> None:
