@@ -83,11 +83,7 @@ def cmd_item(args: argparse.Namespace) -> int:
     client = TraderaClient()
     item_id = parse_item_id(args.item)
     data = client.item(item_id)
-    payment_calculations: dict[str, Any] = {}
-    try:
-        payment_calculations = client.item_payment_calculations(item_id)
-    except TraderaApiError:
-        payment_calculations = {}
+    payment_calculations = data.get("paymentCalculations", {})
 
     buyer_protection_total, buyer_protection_fee = _extract_buyer_protection(data, payment_calculations)
 

@@ -191,10 +191,8 @@ def test_cmd_item_table_uses_payment_calculations_for_bid_total(
                 "bidCount": 1,
                 "currency": "SEK",
                 "seller": {"alias": "john"},
+                "paymentCalculations": {"paymentAmountForBid": 4927},
             }
-
-        def item_payment_calculations(self, _item_id: int) -> dict:
-            return {"paymentAmountForBid": 4927}
 
     monkeypatch.setattr(cli, "TraderaClient", ItemClient)
 

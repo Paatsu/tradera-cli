@@ -95,14 +95,26 @@ class TraderaClient:
                         offers = item.get("offers")
                         offer_data = offers if isinstance(offers, dict) else (offers[0] if isinstance(offers, list) and offers else {})
 
+                        availability = offer_data.get("availability", "")
+                        status = "Unknown"
+                        if "InStock" in availability:
+                            status = "Ongoing"
+                        elif "OutOfStock" in availability:
+                            status = "Ended"
+
                         return {
                             "itemId": item.get("sku"),
                             "title": item.get("name"),
                             "shortDescription": item.get("name"),
                             "description": item.get("description"),
                             "price": offer_data.get("price"),
+                            "buyNowPrice": offer_data.get("price"),
+                            "fixedPrice": offer_data.get("price"),
+                            "leadingBid": offer_data.get("price"),
+                            "openingBid": offer_data.get("price"),
                             "currency": offer_data.get("priceCurrency", "SEK"),
                             "mainImage": item.get("image"),
+                            "status": status,
                         }
             except (ValueError, TypeError):
                 continue
@@ -222,83 +234,171 @@ class TraderaClient:
         return discover
 
     def item(self, item_id: int) -> dict[str, Any]:
-        try:
-            return self._item_from_page(item_id)
-        except TraderaApiError:
-            data = self._request("GET", f"/ajax/item/{item_id}")
-        if not isinstance(data, dict):
-            raise TraderaApiError(f"Unexpected item response for item {item_id}")
-        return data
-
-    def _item_page_state(self, item_id: int) -> dict[str, Any]:
+        # Fetch the item page and parse streaming response for item data
         html = self._request("GET", f"/item/{item_id}")
         if not isinstance(html, str):
             raise TraderaApiError(f"Unexpected item page response for item {item_id}")
 
-        try:
-            data = self._next_data_from_html(html, f"item page response for item {item_id}")
-        except TraderaApiError:
+        # Extract item details from Next.js streaming response
+        item_details = self._extract_item_details_from_streaming(html, item_id)
+        if not item_details:
             # Fallback to JSON-LD extraction
             json_ld_data = self._extract_json_ld_product(html)
             if json_ld_data:
-                # Wrap in the structure expected by _item_from_page
-                data = {
-                    "props": {
-                        "pageProps": {
-                            "initialState": {
-                                "views": {
-                                    "viewItem": {
-                                        "itemDetails": json_ld_data
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            else:
-                raise
+                json_ld_data.setdefault("currency", "SEK")
+                return json_ld_data
+            raise TraderaApiError(f"Could not parse item details for item {item_id}")
 
-        view_item = (
-            data.get("props", {})
-            .get("pageProps", {})
-            .get("initialState", {})
-            .get("views", {})
-            .get("viewItem", {})
-        )
-        if not isinstance(view_item, dict):
-            raise TraderaApiError(f"Unexpected item page data for item {item_id}")
-        return view_item
+        # Extract bid info from streaming response
+        bid_info = self._extract_bid_info_from_streaming(html)
+        if bid_info:
+            item_details["bidCount"] = bid_info.get("bidCount")
+            item_details["leadingBid"] = bid_info.get("leadingBidAmount")
+            item_details["nextBid"] = bid_info.get("nextValidBidAmount")
 
-    def _item_from_page(self, item_id: int) -> dict[str, Any]:
-        view_item = self._item_page_state(item_id)
-        item_details = view_item.get("itemDetails")
-        if not isinstance(item_details, dict) or not item_details:
-            raise TraderaApiError(f"Unexpected item response for item {item_id}")
+        # Extract payment calculations from streaming response
+        payment_calculations = self._extract_payment_calculations_from_streaming(html)
+        if payment_calculations:
+            item_details["paymentCalculations"] = payment_calculations
 
-        data = dict(item_details)
-        bid_info = view_item.get("bidInfo")
-        if isinstance(bid_info, dict):
-            if bid_info.get("bidCount") is not None:
-                data.setdefault("bidCount", bid_info.get("bidCount"))
-            if bid_info.get("leadingBidAmount") is not None:
-                data.setdefault("leadingBid", bid_info.get("leadingBidAmount"))
-            if bid_info.get("nextValidBidAmount") is not None:
-                data.setdefault("nextBid", bid_info.get("nextValidBidAmount"))
+        item_details.setdefault("currency", "SEK")
+        return item_details
 
-        purchase_info = view_item.get("purchaseInfo")
-        if isinstance(purchase_info, dict) and purchase_info.get("finalPrice") is not None:
-            data.setdefault("price", purchase_info.get("finalPrice"))
-            data.setdefault("finalPrice", purchase_info.get("finalPrice"))
+    def _extract_item_details_from_streaming(self, html: str, item_id: int) -> dict[str, Any] | None:
+        """Extract item details from Next.js streaming response."""
+        import re
+        import json
 
-        data.setdefault("currency", "SEK")
-        return data
+        # Find the streaming data part
+        stream_pos = html.find("self.__next_f.push")
+        if stream_pos < 0:
+            return None
+
+        streaming = html[stream_pos:]
+
+        # Find itemDetails in streaming data
+        item_details_pos = streaming.find("itemDetails")
+        if item_details_pos < 0:
+            return None
+
+        # Extract the JSON object starting from itemDetails
+        start = max(0, item_details_pos - 50)
+        end = min(len(streaming), item_details_pos + 30000)
+        chunk = streaming[start:end]
+
+        # Find the start of the object
+        obj_start = chunk.find("{")
+        if obj_start < 0:
+            return None
+
+        # Parse by counting braces
+        brace_count = 0
+        for i, ch in enumerate(chunk[obj_start:], obj_start):
+            if ch == "{":
+                brace_count += 1
+            elif ch == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    json_str = chunk[obj_start:i+1]
+                    # Unescape JSON string
+                    json_str = json_str.replace("\\\\", "\\").replace('\\"', '"').replace("\\/", "/")
+                    try:
+                        data = json.loads(json_str)
+                        # The data structure is {"item": {"itemDetails": {...}, ...}, ...}
+                        # Extract the itemDetails from the nested structure
+                        if isinstance(data, dict):
+                            item_obj = data.get("item")
+                            if isinstance(item_obj, dict):
+                                return item_obj.get("itemDetails", {})
+                            return data.get("itemDetails", data)
+                        return {}
+                    except Exception:
+                        return None
+        return None
+
+    def _extract_bid_info_from_streaming(self, html: str) -> dict[str, Any] | None:
+        """Extract bid info from Next.js streaming response."""
+        import re
+        import json
+
+        stream_pos = html.find("self.__next_f.push")
+        if stream_pos < 0:
+            return None
+
+        streaming = html[stream_pos:]
+        bid_info_pos = streaming.find("bidInfo")
+        if bid_info_pos < 0:
+            return None
+
+        start = max(0, bid_info_pos - 50)
+        end = min(len(streaming), bid_info_pos + 5000)
+        chunk = streaming[start:end]
+
+        obj_start = chunk.find("{")
+        if obj_start < 0:
+            return None
+
+        brace_count = 0
+        for i, ch in enumerate(chunk[obj_start:], obj_start):
+            if ch == "{":
+                brace_count += 1
+            elif ch == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    json_str = chunk[obj_start:i+1]
+                    json_str = json_str.replace("\\\\", "\\").replace('\\"', '"').replace("\\/", "/")
+                    try:
+                        return json.loads(json_str)
+                    except Exception:
+                        return None
+        return None
+
+    def _extract_payment_calculations_from_streaming(self, html: str) -> dict[str, Any] | None:
+        """Extract payment calculations from Next.js streaming response."""
+        import re
+        import json
+
+        stream_pos = html.find("self.__next_f.push")
+        if stream_pos < 0:
+            return None
+
+        streaming = html[stream_pos:]
+        pc_pos = streaming.find("paymentCalculations")
+        if pc_pos < 0:
+            return None
+
+        # Find the opening brace for the paymentCalculations object
+        # It should be after "paymentCalculations":
+        colon_pos = streaming.find(":", pc_pos)
+        if colon_pos < 0:
+            return None
+        obj_start = streaming.find("{", colon_pos)
+        if obj_start < 0:
+            return None
+
+        # Parse by counting braces
+        brace_count = 0
+        for i, ch in enumerate(streaming[obj_start:], obj_start):
+            if ch == "{":
+                brace_count += 1
+            elif ch == "}":
+                brace_count -= 1
+                if brace_count == 0:
+                    json_str = streaming[obj_start:i+1]
+                    json_str = json_str.replace("\\\\", "\\").replace('\\"', '"').replace("\\/", "/")
+                    try:
+                        return json.loads(json_str)
+                    except Exception:
+                        return None
+        return None
 
     def item_payment_calculations(self, item_id: int) -> dict[str, Any]:
-        item_details = self._item_page_state(item_id).get("itemDetails", {})
-        if not isinstance(item_details, dict):
-            raise TraderaApiError(f"Unexpected payment calculations for item {item_id}")
-        payment_calculations = item_details.get("paymentCalculations", {})
-        if not isinstance(payment_calculations, dict):
+        html = self._request("GET", f"/item/{item_id}")
+        if not isinstance(html, str):
+            raise TraderaApiError(f"Unexpected item page response for item {item_id}")
+
+        payment_calculations = self._extract_payment_calculations_from_streaming(html)
+        if not payment_calculations:
             raise TraderaApiError(f"Unexpected payment calculations for item {item_id}")
         return payment_calculations
 

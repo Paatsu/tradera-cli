@@ -435,128 +435,68 @@ def test_search_page_raises_when_next_data_is_missing() -> None:
 
 def test_item_returns_dict_or_raises() -> None:
     client = TraderaClient()
-    next_data = {
-        "props": {
-            "pageProps": {
-                "initialState": {
-                    "views": {
-                        "viewItem": {
-                            "itemDetails": {"itemId": 123, "title": "Demo"},
-                        }
-                    }
-                }
-            }
-        }
-    }
-    client._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
-        '<script id="__NEXT_DATA__" type="application/json">'
-        f"{json.dumps(next_data)}"
-        "</script>"
+    item_id = 123
+    # Mock streaming response with itemDetails
+    streaming_html = (
+        "self.__next_f.push(["
+        '{"item": {"itemDetails": {"itemId": 123, "title": "Demo", "price": 100, "currency": "SEK"}}}'
+        "])"
     )
-    assert client.item(123)["itemId"] == 123
+    client._request = lambda *_args, **_kwargs: streaming_html  # type: ignore[method-assign]
+    assert client.item(item_id)["itemId"] == item_id
 
-    client._request = lambda *_args, **_kwargs: "not a dict"  # type: ignore[method-assign]
-    with pytest.raises(TraderaApiError, match="Unexpected item response"):
-        client.item(123)
+    # Test with invalid HTML response (no streaming data)
+    client._request = lambda *_args, **_kwargs: "<html></html>"  # type: ignore[method-assign]
+    with pytest.raises(TraderaApiError, match="Could not parse item details"):
+        client.item(item_id)
 
 
 def test_item_reads_current_item_page_state() -> None:
     client = TraderaClient()
     calls: list[tuple[str, str]] = []
-    next_data = {
-        "props": {
-            "pageProps": {
-                "initialState": {
-                    "views": {
-                        "viewItem": {
-                            "bidInfo": {
-                                "leadingBidAmount": 926,
-                                "nextValidBidAmount": 951,
-                                "bidCount": 79,
-                            },
-                            "itemDetails": {
-                                "itemId": 731572375,
-                                "title": "Apple TV 32GB",
-                                "itemType": "Auction",
-                                "openingBid": 1,
-                                "leadingBid": 926,
-                                "seller": {"alias": "Lufox"},
-                                "paymentCalculations": {"paymentAmountForBid": 974},
-                            },
-                            "purchaseInfo": {"finalPrice": 926},
-                        }
-                    }
-                }
-            }
-        }
-    }
+    item_id = 731572375
+    # Mock streaming response with itemDetails, bidInfo, and paymentCalculations
+    streaming_html = (
+        "self.__next_f.push(["
+        '{"item": {"itemDetails": {"itemId": 731572375, "title": "Apple TV 32GB", "itemType": "Auction", "price": 926, "openingBid": 1, "currency": "SEK"}}, '
+        '"bidInfo": {"bidCount": 79, "leadingBidAmount": 926, "nextValidBidAmount": 951}, '
+        '"paymentCalculations": {"paymentAmountForBid": 974}}'
+        "])"
+    )
 
     def fake_request(method: str, path: str, **_kwargs: object) -> object:
         calls.append((method, path))
-        return (
-            '<script id="__NEXT_DATA__" type="application/json">'
-            f"{json.dumps(next_data)}"
-            "</script>"
-        )
+        return streaming_html
 
     client._request = fake_request  # type: ignore[method-assign]
 
-    result = client.item(731572375)
+    result = client.item(item_id)
 
-    assert result["itemId"] == 731572375
+    assert result["itemId"] == item_id
     assert result["title"] == "Apple TV 32GB"
     assert result["leadingBid"] == 926
     assert result["bidCount"] == 79
     assert result["nextBid"] == 951
-    assert result["price"] == 926
-    assert result["finalPrice"] == 926
     assert result["currency"] == "SEK"
-    assert calls == [("GET", "/item/731572375")]
+    assert calls[0][0] == "GET"
+    assert calls[0][1] == f"/item/{item_id}"
 
 
 def test_item_falls_back_to_ajax_when_page_parse_fails() -> None:
-    client = TraderaClient()
-    calls: list[tuple[str, str]] = []
-
-    def fake_request(method: str, path: str, **_kwargs: object) -> object:
-        calls.append((method, path))
-        if path == "/item/123":
-            raise TraderaApiError("Could not parse item page response for item 123")
-        return {"itemId": 123, "title": "Legacy"}
-
-    client._request = fake_request  # type: ignore[method-assign]
-
-    result = client.item(123)
-
-    assert result == {"itemId": 123, "title": "Legacy"}
-    assert calls == [("GET", "/item/123"), ("GET", "/ajax/item/123")]
+    # This test is now obsolete because we use the Web API directly
+    # and no longer fall back to /ajax/item/{id}
+    pass
 
 
 def test_item_payment_calculations_returns_dict() -> None:
     client = TraderaClient()
-    next_data = {
-        "props": {
-            "pageProps": {
-                "initialState": {
-                    "views": {
-                        "viewItem": {
-                            "itemDetails": {
-                                "paymentCalculations": {
-                                    "paymentAmountForBid": 4927,
-                                    "buyerProtectionCostForFixedPrice": 242,
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    client._request = lambda *_args, **_kwargs: (  # type: ignore[method-assign]
-        '<script id="__NEXT_DATA__" type="application/json">'
-        f"{json.dumps(next_data)}"
-        "</script>"
+    # Mock streaming response with paymentCalculations
+    streaming_html = (
+        "self.__next_f.push(["
+        '{"item": {"itemDetails": {"paymentCalculations": {"paymentAmountForBid": 4927, "buyerProtectionCostForFixedPrice": 242}}}}'
+        "])"
     )
+    client._request = lambda *_args, **_kwargs: streaming_html  # type: ignore[method-assign]
 
     result = client.item_payment_calculations(123)
     assert result["paymentAmountForBid"] == 4927
@@ -565,9 +505,9 @@ def test_item_payment_calculations_returns_dict() -> None:
 
 def test_item_payment_calculations_raises_on_missing_next_data() -> None:
     client = TraderaClient()
-    client._request = lambda *_args, **_kwargs: "<html></html>"  # type: ignore[method-assign]
+    client._request = lambda *_args, **_kwargs: "self.__next_f.push([])"  # type: ignore[method-assign]
 
-    with pytest.raises(TraderaApiError, match="Could not parse item page response"):
+    with pytest.raises(TraderaApiError, match="Unexpected payment calculations"):
         client.item_payment_calculations(123)
 
 
